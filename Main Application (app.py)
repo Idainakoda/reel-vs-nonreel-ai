@@ -1,0 +1,287 @@
+import streamlit as st
+import plotly.graph_objects as go
+import plotly.express as px
+import pandas as pd
+import time
+import threading
+from datetime import datetime, timedelta
+import queue
+from network_monitor import NetworkMonitor
+from model_manager import ModelManager
+
+# Page configuration
+st.set_page_config(
+    page_title="Network Traffic Monitor",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Initialize session state
+if 'monitor' not in st.session_state:
+    st.session_state.monitor = NetworkMonitor()
+    st.session_state.model_manager = ModelManager()
+    st.session_state.data_queue = queue.Queue()
+    st.session_state.predictions_history = []
+    st.session_state.traffic_data = []
+    st.session_state.running = False
+
+def start_monitoring():
+    """Start the network monitoring process"""
+    if not st.session_state.running:
+        st.session_state.running = True
+        threading.Thread(
+            target=st.session_state.monitor.start_monitoring,
+            args=(st.session_state.data_queue,),
+            daemon=True
+        ).start()
+
+def stop_monitoring():
+    """Stop the network monitoring process"""
+    st.session_state.running = False
+    st.session_state.monitor.stop_monitoring()
+
+def process_new_data():
+    """Process new data from the monitoring queue"""
+    new_data_count = 0
+    while not st.session_state.data_queue.empty():
+        try:
+            flow_data = st.session_state.data_queue.get_nowait()
+            
+            # Make prediction
+            prediction, confidence = st.session_state.model_manager.predict(flow_data)
+            
+            # Add timestamp
+            flow_data['timestamp'] = datetime.now()
+            flow_data['prediction'] = prediction
+            flow_data['confidence'] = confidence
+            
+            # Store in history
+            st.session_state.traffic_data.append(flow_data)
+            st.session_state.predictions_history.append({
+                'timestamp': flow_data['timestamp'],
+                'prediction': prediction,
+                'confidence': confidence
+            })
+            
+            # Keep only last 100 records
+            if len(st.session_state.traffic_data) > 100:
+                st.session_state.traffic_data = st.session_state.traffic_data[-100:]
+            if len(st.session_state.predictions_history) > 100:
+                st.session_state.predictions_history = st.session_state.predictions_history[-100:]
+            
+            new_data_count += 1
+        except queue.Empty:
+            break
+    
+    return new_data_count
+
+# Main application
+def main():
+    st.title("🌐 Real-Time Network Traffic Monitor")
+    st.markdown("---")
+    
+    # Sidebar controls
+    st.sidebar.header("Control Panel")
+    
+    if st.sidebar.button("Start Monitoring", disabled=st.session_state.running):
+        start_monitoring()
+        st.sidebar.success("Monitoring started!")
+    
+    if st.sidebar.button("Stop Monitoring", disabled=not st.session_state.running):
+        stop_monitoring()
+        st.sidebar.info("Monitoring stopped!")
+    
+    # Auto-refresh controls
+    refresh_interval = st.sidebar.selectbox(
+        "Refresh Interval (seconds)",
+        [1, 2, 5, 10],
+        index=1
+    )
+    
+    # Status indicator
+    status_color = "🟢" if st.session_state.running else "🔴"
+    st.sidebar.markdown(f"**Status:** {status_color} {'Running' if st.session_state.running else 'Stopped'}")
+    
+    # Process new data
+    new_data_count = process_new_data()
+    
+    if new_data_count > 0:
+        st.sidebar.success(f"Processed {new_data_count} new flows")
+    
+    # Main dashboard
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_flows = len(st.session_state.traffic_data)
+        st.metric("Total Flows", total_flows)
+    
+    with col2:
+        video_count = sum(1 for d in st.session_state.traffic_data if d.get('prediction') == 'video')
+        st.metric("Video Traffic", video_count)
+    
+    with col3:
+        non_video_count = sum(1 for d in st.session_state.traffic_data if d.get('prediction') == 'non-video')
+        st.metric("Non-Video Traffic", non_video_count)
+    
+    with col4:
+        avg_confidence = 0
+        if st.session_state.predictions_history:
+            avg_confidence = sum(p['confidence'] for p in st.session_state.predictions_history) / len(st.session_state.predictions_history)
+        st.metric("Avg Confidence", f"{avg_confidence:.2f}")
+    
+    # Charts section
+    if st.session_state.traffic_data:
+        st.subheader("📈 Real-Time Traffic Analysis")
+        
+        # Create DataFrame for plotting
+        df = pd.DataFrame(st.session_state.traffic_data)
+        
+        # Time series chart of predictions
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Traffic Classification Over Time")
+            fig_timeline = go.Figure()
+            
+            # Group by prediction type
+            for pred_type in ['video', 'non-video']:
+                type_data = df[df['prediction'] == pred_type]
+                if not type_data.empty:
+                    fig_timeline.add_trace(go.Scatter(
+                        x=type_data['timestamp'],
+                        y=[pred_type] * len(type_data),
+                        mode='markers',
+                        name=pred_type.title(),
+                        marker=dict(
+                            size=type_data['confidence'] * 20,
+                            color='red' if pred_type == 'video' else 'blue',
+                            opacity=0.7
+                        ),
+                        hovertemplate=f'<b>{pred_type.title()}</b><br>' +
+                                    'Time: %{x}<br>' +
+                                    'Confidence: %{marker.size}<extra></extra>'
+                    ))
+            
+            fig_timeline.update_layout(
+                height=400,
+                yaxis=dict(categoryorder='category ascending'),
+                showlegend=True
+            )
+            st.plotly_chart(fig_timeline, use_container_width=True)
+        
+        with col2:
+            st.subheader("Traffic Type Distribution")
+            pred_counts = df['prediction'].value_counts()
+            fig_pie = px.pie(
+                values=pred_counts.values,
+                names=pred_counts.index,
+                color_discrete_map={'video': 'red', 'non-video': 'blue'}
+            )
+            fig_pie.update_layout(height=400)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        
+        # Network metrics charts
+        st.subheader("📊 Network Flow Metrics")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Packet Size Distribution")
+            fig_packets = px.histogram(
+                df,
+                x='packet_size',
+                color='prediction',
+                nbins=20,
+                color_discrete_map={'video': 'red', 'non-video': 'blue'}
+            )
+            fig_packets.update_layout(height=400)
+            st.plotly_chart(fig_packets, use_container_width=True)
+        
+        with col2:
+            st.subheader("Flow Duration vs Bytes")
+            fig_scatter = px.scatter(
+                df,
+                x='duration',
+                y='total_bytes',
+                color='prediction',
+                size='confidence',
+                hover_data=['packet_size', 'inter_arrival_time'],
+                color_discrete_map={'video': 'red', 'non-video': 'blue'}
+            )
+            fig_scatter.update_layout(height=400)
+            st.plotly_chart(fig_scatter, use_container_width=True)
+        
+        # Recent flows table
+        st.subheader("📋 Recent Network Flows")
+        recent_df = df.tail(10).copy()
+        recent_df['timestamp'] = recent_df['timestamp'].dt.strftime('%H:%M:%S')
+        recent_df = recent_df[[
+            'timestamp', 'packet_size', 'inter_arrival_time', 
+            'total_bytes', 'duration', 'protocol', 'port', 
+            'prediction', 'confidence'
+        ]]
+        
+        # Format confidence as percentage
+        recent_df['confidence'] = recent_df['confidence'].apply(lambda x: f"{x:.1%}")
+        
+        st.dataframe(
+            recent_df,
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Model performance section
+        st.subheader("🎯 Model Performance")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Confidence Score Distribution")
+            fig_conf = px.histogram(
+                df,
+                x='confidence',
+                nbins=20,
+                color='prediction',
+                color_discrete_map={'video': 'red', 'non-video': 'blue'}
+            )
+            fig_conf.update_layout(height=400)
+            st.plotly_chart(fig_conf, use_container_width=True)
+        
+        with col2:
+            st.subheader("Prediction Confidence Over Time")
+            fig_conf_time = px.line(
+                df,
+                x='timestamp',
+                y='confidence',
+                color='prediction',
+                color_discrete_map={'video': 'red', 'non-video': 'blue'}
+            )
+            fig_conf_time.update_layout(height=400)
+            st.plotly_chart(fig_conf_time, use_container_width=True)
+    
+    else:
+        st.info("🚀 Start monitoring to see real-time network traffic analysis!")
+        st.markdown("""
+        ### About This Monitor
+        
+        This application uses a Random Forest machine learning model to classify network traffic as either:
+        - **Video Traffic**: High bandwidth, consistent flow patterns
+        - **Non-Video Traffic**: Variable patterns, lower bandwidth usage
+        
+        **Features:**
+        - Real-time traffic classification
+        - Interactive visualizations
+        - Confidence scoring
+        - Historical analysis
+        - Performance metrics
+        
+        Click "Start Monitoring" to begin analyzing network flows!
+        """)
+    
+    # Auto-refresh
+    if st.session_state.running:
+        time.sleep(refresh_interval)
+        st.rerun()
+
+if __name__ == "__main__":
+    main()
