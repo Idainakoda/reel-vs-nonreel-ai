@@ -1,0 +1,159 @@
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+import joblib
+import os
+
+class ModelManager:
+    """Manages the RandomForest model for network traffic classification"""
+    
+    def __init__(self):
+        self.model = None
+        self.scaler = None
+        self.feature_names = [
+            'packet_size', 'inter_arrival_time', 'total_bytes', 
+            'duration', 'protocol', 'port'
+        ]
+        self.initialize_model()
+    
+    def initialize_model(self):
+        """Initialize and train the RandomForest model with enhanced training data"""
+        # Enhanced training data with more diverse examples
+        X_train = np.array([
+            # Video traffic patterns
+            [520, 0.04, 850000, 3.1, 6, 443],     # HTTPS video streaming
+            [480, 0.05, 750000, 2.8, 6, 1935],    # RTMP streaming
+            [600, 0.03, 920000, 3.5, 6, 8080],    # HTTP video
+            [450, 0.06, 680000, 2.5, 6, 443],     # Mobile video
+            [550, 0.04, 800000, 3.2, 6, 80],      # HTTP video
+            [510, 0.05, 770000, 2.9, 6, 443],     # YouTube-like
+            [580, 0.03, 890000, 3.4, 6, 1935],    # Live streaming
+            [490, 0.05, 720000, 2.7, 6, 8080],    # WebRTC video
+            
+            # Non-video traffic patterns
+            [300, 0.2, 100000, 1.0, 6, 443],      # HTTPS browsing
+            [250, 0.15, 80000, 0.8, 6, 80],       # HTTP browsing
+            [150, 0.3, 50000, 0.5, 17, 53],       # DNS queries
+            [200, 0.25, 60000, 0.7, 6, 22],       # SSH
+            [180, 0.28, 45000, 0.6, 6, 25],       # SMTP
+            [320, 0.18, 110000, 1.2, 6, 443],     # API calls
+            [280, 0.22, 90000, 0.9, 17, 123],     # NTP
+            [240, 0.24, 75000, 0.8, 6, 993],      # IMAPS
+            [160, 0.35, 40000, 0.4, 17, 161],     # SNMP
+            [350, 0.16, 120000, 1.1, 6, 80],      # File download (small)
+        ])
+        
+        y_train = np.array([
+            # Video labels
+            "video", "video", "video", "video", "video", 
+            "video", "video", "video",
+            # Non-video labels  
+            "non-video", "non-video", "non-video", "non-video",
+            "non-video", "non-video", "non-video", "non-video",
+            "non-video", "non-video"
+        ])
+        
+        # Initialize and train the scaler
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X_train)
+        
+        # Initialize and train the model with optimized parameters
+        self.model = RandomForestClassifier(
+            n_estimators=50,        # More trees for better performance
+            max_depth=6,            # Deeper trees
+            min_samples_split=2,    # Allow more splitting
+            min_samples_leaf=1,     # Allow smaller leaves
+            random_state=42,        # For reproducibility
+            class_weight='balanced' # Handle class imbalance
+        )
+        
+        self.model.fit(X_scaled, y_train)
+        
+        print("Model initialized and trained successfully!")
+        print(f"Model accuracy on training data: {self.model.score(X_scaled, y_train):.2f}")
+    
+    def prepare_features(self, flow_data):
+        """Convert flow data dictionary to feature array"""
+        features = np.array([[
+            flow_data['packet_size'],
+            flow_data['inter_arrival_time'],
+            flow_data['total_bytes'],
+            flow_data['duration'],
+            flow_data['protocol'],
+            flow_data['port']
+        ]])
+        return features
+    
+    def predict(self, flow_data):
+        """Make prediction on a single flow"""
+        try:
+            # Prepare features
+            features = self.prepare_features(flow_data)
+            
+            # Scale features
+            features_scaled = self.scaler.transform(features)
+            
+            # Make prediction
+            prediction = self.model.predict(features_scaled)[0]
+            
+            # Get prediction probabilities for confidence score
+            probabilities = self.model.predict_proba(features_scaled)[0]
+            confidence = max(probabilities)  # Confidence is the highest probability
+            
+            return prediction, confidence
+            
+        except Exception as e:
+            print(f"Error making prediction: {e}")
+            return "unknown", 0.0
+    
+    def predict_batch(self, flow_data_list):
+        """Make predictions on multiple flows"""
+        try:
+            # Prepare all features
+            features = np.array([
+                [
+                    flow['packet_size'],
+                    flow['inter_arrival_time'], 
+                    flow['total_bytes'],
+                    flow['duration'],
+                    flow['protocol'],
+                    flow['port']
+                ] for flow in flow_data_list
+            ])
+            
+            # Scale features
+            features_scaled = self.scaler.transform(features)
+            
+            # Make predictions
+            predictions = self.model.predict(features_scaled)
+            probabilities = self.model.predict_proba(features_scaled)
+            confidences = np.max(probabilities, axis=1)
+            
+            return list(zip(predictions, confidences))
+            
+        except Exception as e:
+            print(f"Error making batch predictions: {e}")
+            return [("unknown", 0.0)] * len(flow_data_list)
+    
+    def get_feature_importance(self):
+        """Get feature importance from the trained model"""
+        if self.model is not None:
+            importance_dict = dict(zip(
+                self.feature_names, 
+                self.model.feature_importances_
+            ))
+            return importance_dict
+        return {}
+    
+    def get_model_info(self):
+        """Get model information and statistics"""
+        if self.model is not None:
+            return {
+                'n_estimators': self.model.n_estimators,
+                'max_depth': self.model.max_depth,
+                'n_features': self.model.n_features_in_,
+                'n_classes': len(self.model.classes_),
+                'classes': list(self.model.classes_),
+                'feature_importance': self.get_feature_importance()
+            }
+        return {}
