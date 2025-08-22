@@ -28,7 +28,7 @@ Installation
 
 Clone the repository:
 
-git clone https://github.com/Idainakoda/reel-vs-nonreel-ai-model
+git clone https://github.com/Idainakoda/reel-vs-nonreel-ai
 
 
 Install dependencies:
