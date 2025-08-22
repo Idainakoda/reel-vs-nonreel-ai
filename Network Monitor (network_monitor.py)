@@ -1,0 +1,100 @@
+import numpy as np
+import time
+import random
+import threading
+from datetime import datetime
+import queue
+
+class NetworkMonitor:
+    """Simulates network traffic monitoring with realistic flow patterns"""
+    
+    def __init__(self):
+        self.monitoring = False
+        self.monitor_thread = None
+    
+    def generate_video_flow(self):
+        """Generate simulated video traffic flow data"""
+        return {
+            'packet_size': np.random.normal(520, 50),  # Larger packets for video
+            'inter_arrival_time': np.random.exponential(0.04),  # Consistent timing
+            'total_bytes': np.random.normal(850000, 100000),  # High bandwidth
+            'duration': np.random.normal(3.1, 0.5),  # Longer duration
+            'protocol': 6,  # TCP
+            'port': random.choice([443, 80, 1935, 8080])  # Common video ports
+        }
+    
+    def generate_non_video_flow(self):
+        """Generate simulated non-video traffic flow data"""
+        return {
+            'packet_size': np.random.normal(300, 100),  # Smaller packets
+            'inter_arrival_time': np.random.exponential(0.2),  # Variable timing
+            'total_bytes': np.random.normal(100000, 50000),  # Lower bandwidth
+            'duration': np.random.normal(1.0, 0.3),  # Shorter duration
+            'protocol': random.choice([6, 17]),  # TCP or UDP
+            'port': random.choice([443, 80, 53, 22, 25])  # Common web/service ports
+        }
+    
+    def generate_flow_data(self):
+        """Generate a random network flow based on realistic probabilities"""
+        # 60% chance of non-video, 40% chance of video traffic
+        if random.random() < 0.4:
+            flow_type = "video"
+            flow_data = self.generate_video_flow()
+        else:
+            flow_type = "non-video"
+            flow_data = self.generate_non_video_flow()
+        
+        # Ensure values are within reasonable bounds
+        flow_data['packet_size'] = max(64, min(1500, flow_data['packet_size']))
+        flow_data['inter_arrival_time'] = max(0.001, flow_data['inter_arrival_time'])
+        flow_data['total_bytes'] = max(1000, flow_data['total_bytes'])
+        flow_data['duration'] = max(0.1, flow_data['duration'])
+        
+        # Add some noise and edge cases occasionally
+        if random.random() < 0.1:  # 10% chance of anomalous traffic
+            flow_data['packet_size'] *= random.uniform(0.5, 2.0)
+            flow_data['total_bytes'] *= random.uniform(0.3, 3.0)
+        
+        return flow_data
+    
+    def monitoring_loop(self, data_queue):
+        """Main monitoring loop that generates network flow data"""
+        while self.monitoring:
+            try:
+                # Generate new flow data
+                flow_data = self.generate_flow_data()
+                
+                # Add to queue
+                data_queue.put(flow_data)
+                
+                # Simulate variable flow arrival times
+                sleep_time = random.uniform(0.5, 2.0)  # 0.5 to 2 seconds between flows
+                time.sleep(sleep_time)
+                
+            except Exception as e:
+                print(f"Error in monitoring loop: {e}")
+                time.sleep(1)
+    
+    def start_monitoring(self, data_queue):
+        """Start the network monitoring process"""
+        if not self.monitoring:
+            self.monitoring = True
+            self.monitor_thread = threading.Thread(
+                target=self.monitoring_loop,
+                args=(data_queue,),
+                daemon=True
+            )
+            self.monitor_thread.start()
+    
+    def stop_monitoring(self):
+        """Stop the network monitoring process"""
+        self.monitoring = False
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=1)
+    
+    def get_current_stats(self):
+        """Get current monitoring statistics"""
+        return {
+            'monitoring': self.monitoring,
+            'thread_active': self.monitor_thread.is_alive() if self.monitor_thread else False
+        }
